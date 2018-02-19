@@ -1,3 +1,0 @@
-[submodule "arduino/lib/RF24"]
-	path = arduino/lib/RF24
-	url = git@github.com:maniacbug/RF24.git
