@@ -1,4 +1,3 @@
-#include <ArduinoJson.h>
 #include <RF24.h>
 #include <SPI.h>
 #include <Servo.h>
@@ -11,33 +10,30 @@
 #define MOTOR_INB 5
 #define MOTOR_PWM 6
 
-int maxSpeed = 50;
-int currentSpeed = 0;
-int targetSpeed = 0;
+int maxSpeed = 125;
+float currentSpeed = 0;
+float targetSpeed = 0;
 int motorDir = 1;
-int motorCurrent = 0;
+float motorCurrent = 0;
 bool motorStuck = false;
 int stuckTime = 0;
 
 // servo
-#define SERVO_PWM 10
+#define SERVO_PWM 8
 int servoAngle = 0;
 Servo servo;
 
 // radio
-#define RADIO_CE 7
-#define RADIO_CS 6
+#define RADIO_CE 9
+#define RADIO_CS 10
 
 RF24 radio(RADIO_CE, RADIO_CS);
 int rcData[2];
 
 // time
-int deltaTime = 0;
-float damping = 0.5;
-
-// logging
-const size_t bufferSize = JSON_OBJECT_SIZE(200);
-DynamicJsonBuffer jsonBuffer(bufferSize);
+float deltaTime = 0;
+float lastTime = 0;
+float damping = 1.5;
 
 void setupMotor() {
   pinMode(MOTOR_INA, OUTPUT);
@@ -59,7 +55,7 @@ void setupRadio() {
 void setupServo() { servo.attach(SERVO_PWM); }
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   setupMotor();
   setupServo();
@@ -68,30 +64,38 @@ void setup() {
   calcDeltaTime();
 }
 
-void logState() {
-  JsonObject &root = jsonBuffer.createObject();
-  root["currentSpeed"] = currentSpeed;
-  root["targetSpeed"] = targetSpeed;
-  root["motorCurrent"] = motorCurrent;
-  root["motorDir"] = motorDir;
-  root["motorStuck"] = motorStuck;
+void plotState() {
+  plot("currentSpeed", currentSpeed);
+  plot("targetSpeed", targetSpeed);
+  plot("motorCurrent", motorCurrent);
+  plot("motorDir", motorDir);
+  plot("motorStuck", motorStuck);
 
-  root["servoAngle"] = servoAngle;
-  root["deltaTime"] = deltaTime;
-  root["stuckTime"] = stuckTime;
+  plot("servoAngle", servoAngle);
+  plot("deltaTime", deltaTime);
+  plot("stuckTime", stuckTime);
+}
 
-  root.printTo(Serial);
+void plot(String name, float value) {
+  String time = String(millis());
+  Serial.println("PLOT[" + time + ";" + name + "=" + value + "]");
 }
 
 float lerp(float v0, float v1, float t) { return v0 * (1 - t) + v1 * t; }
 
-void calcDeltaTime() { deltaTime = millis() - deltaTime; }
+void calcDeltaTime() { 
+  int time = millis();
+  deltaTime = (time - lastTime);
+  lastTime = time;
+}
 
 void setDirection(int dir) {
-  if (dir > 0) {
+  motorDir = dir;
+  
+  if (dir < 0) {
     digitalWrite(MOTOR_INA, LOW);
     digitalWrite(MOTOR_INB, HIGH);
-  } else if (dir < 0) {
+  } else if (dir > 0) {
     digitalWrite(MOTOR_INA, HIGH);
     digitalWrite(MOTOR_INB, LOW);
   } else {
@@ -109,19 +113,13 @@ float getMotorCurrent() {
 }
 
 bool stuckDetection() {
-  motorCurrent = getMotorCurrent();
-
-  if (motorCurrent > 20) {
+  if (motorCurrent > 30) {
     stuckTime += deltaTime;
   } else {
     stuckTime = 0;
   }
 
-  if (stuckTime > 1000) {
-    currentSpeed = 0;
-    targetSpeed = 0;
-    setDirection(0);
-    analogWrite(MOTOR_PWM, 0);
+  if (stuckTime > 3000) {
     return true;
   }
 
@@ -135,12 +133,20 @@ void updateSpeed(int value) {
   int dir = value < idle ? -1 : 1;
   int amount = abs(value - idle);
   int speed = map(amount, 0, idle, 0, maxSpeed);
-
+  
+  motorCurrent = getMotorCurrent();
   motorStuck = stuckDetection();
 
-  if (!motorStuck) {
+  if(motorStuck) {
+    currentSpeed = 0;
+    targetSpeed = 0;
+    setDirection(0);
+    analogWrite(MOTOR_PWM, 0);
+  } else {
     targetSpeed = speed;
-    currentSpeed = lerp(currentSpeed, targetSpeed, damping * deltaTime);
+    currentSpeed = speed;
+    // currentSpeed = lerp(currentSpeed, targetSpeed, (1 / damping) * (deltaTime / 1000));
+    currentSpeed = constrain(currentSpeed, 0, maxSpeed);
 
     setDirection(dir);
     analogWrite(MOTOR_PWM, currentSpeed);
@@ -150,24 +156,31 @@ void updateSpeed(int value) {
 void updateAngle(int value) {
   value = constrain(value, 0, 1023);
   int angle = map(value, 0, 1023, 0, 180);
-  myservo.write(angle);
+  servo.write(angle);
 }
 
 void readRadio() {
   if (radio.available()) {
     radio.read(&rcData, sizeof(rcData));
 
-    int angleValue = rcData[0];
-    int speedValue = rcData[1];
+    int speedValue = rcData[0];
+    int angleValue = rcData[1];
 
-    updateSpeed(angleValue);
     updateAngle(speedValue);
+    updateSpeed(angleValue);
   }
+}
+
+void readWired() {
+  int speedValue = analogRead(1);
+
+  updateSpeed(speedValue);
+  updateAngle(speedValue);
 }
 
 void loop() {
   readRadio();
-  logState();
+  plotState();
 
   calcDeltaTime();
 }
